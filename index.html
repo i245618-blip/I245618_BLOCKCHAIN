@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NoteBoard dApp</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <!-- simple inline image (no internet needed) -->
+    <img alt="logo" src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><polygon points='32,4 54,32 32,60 10,32' fill='white'/><polygon points='32,4 54,32 32,40 10,32' fill='%23c7d2fe'/></svg>">
+    <h1>NoteBoard dApp</h1>
+    <p>A tiny public notice board on the Sepolia testnet</p>
+  </header>
+
+  <main>
+    <section>
+      <h2>1. Connect your wallet</h2>
+      <p>You need MetaMask set to the <b>Sepolia</b> network and some free test ETH.</p>
+      <button id="connectBtn">Connect MetaMask</button>
+      <p>Wallet: <span id="account">not connected</span></p>
+      <p id="status"></p>
+    </section>
+
+    <section>
+      <h2>2. Post a note (write)</h2>
+      <input id="noteInput" maxlength="140" placeholder="Write something (max 140 chars)">
+      <button id="postBtn">Post Note</button>
+    </section>
+
+    <section>
+      <h2>3. All notes (read)</h2>
+      <p>Total notes: <b id="total">0</b></p>
+      <button id="refreshBtn">Refresh</button>
+      <div id="notes"></div>
+    </section>
+
+    <section>
+      <h2>How it works</h2>
+      <ul>
+        <li>Click <b>Connect</b> and approve in MetaMask.</li>
+        <li>Posting or liking sends a transaction (costs a little test ETH).</li>
+        <li>Reading notes is free.</li>
+      </ul>
+      <p>Useful links:
+        <a href="https://sepolia.etherscan.io" target="_blank">Sepolia Etherscan</a> |
+        <a href="https://sepoliafaucet.com" target="_blank">Get test ETH</a> |
+        <a id="contractLink" href="#" target="_blank">View my contract</a>
+      </p>
+    </section>
+  </main>
+
+  <footer>MG3012 Assignment 2 - Blockchain Technology for Business</footer>
+
+  <script src="https://cdn.jsdelivr.net/npm/ethers@6.13.2/dist/ethers.umd.min.js"></script>
+  <script>
+    // ====== CHANGE THIS after deploying in Remix ======
+    const CONTRACT_ADDRESS = "0x8370231dc1695928e64c5276da27514b3f84a683";
+    // ==================================================
+
+    const ABI = [
+      "function postNote(string _text)",
+      "function likeNote(uint256 _id)",
+      "function getTotalNotes() view returns (uint256)",
+      "function getNote(uint256 _id) view returns (address author, string text, uint256 likes, uint256 timestamp)"
+    ];
+    const SEPOLIA_CHAIN_ID = 11155111n;
+
+    let provider, signer, contract;
+    const $ = (id) => document.getElementById(id);
+
+    function show(msg, ok = true) {
+      $("status").textContent = msg;
+      $("status").className = ok ? "ok" : "err";
+    }
+
+    $("contractLink").href = "https://sepolia.etherscan.io/address/" + CONTRACT_ADDRESS;
+
+    async function connect() {
+      show("Button clicked... checking MetaMask");
+      if (typeof ethers === "undefined") return show("ethers.js did not load (check internet), refresh the page.", false);
+      if (!window.ethereum) return show("MetaMask not found. Please install it.", false);
+      try {
+        show("Look at MetaMask: click the fox icon (top right) and approve the request...");
+        const accounts = await window.ethereum.request({ method: "eth_requestAccounts" });
+        provider = new ethers.BrowserProvider(window.ethereum);
+        const net = await provider.getNetwork();
+        if (net.chainId !== SEPOLIA_CHAIN_ID) {
+          try {
+            await window.ethereum.request({ method: "wallet_switchEthereumChain", params: [{ chainId: "0xaa36a7" }] });
+          } catch (e) { return show("Please switch MetaMask to Sepolia network.", false); }
+        }
+        provider = new ethers.BrowserProvider(window.ethereum);
+        signer = await provider.getSigner();
+        $("account").textContent = accounts[0];
+        if (!ethers.isAddress(CONTRACT_ADDRESS)) return show("Wallet connected, but CONTRACT_ADDRESS in index.html is not a valid address yet.", false);
+        contract = new ethers.Contract(CONTRACT_ADDRESS, ABI, signer);
+        show("Connected!");
+        loadNotes();
+      } catch (e) { show("Connection failed: " + (e.shortMessage || e.message), false); }
+    }
+
+    async function loadNotes() {
+      if (!contract) return show("Connect your wallet first.", false);
+      try {
+        const total = Number(await contract.getTotalNotes());
+        $("total").textContent = total;
+        $("notes").innerHTML = "";
+        for (let i = total - 1; i >= 0; i--) {
+          const [author, text, likes, ts] = await contract.getNote(i);
+          const div = document.createElement("div");
+          div.className = "note";
+          const p = document.createElement("p");
+          p.textContent = text;                       // textContent = safe from HTML injection
+          const small = document.createElement("small");
+          small.textContent = `#${i} by ${author.slice(0,6)}...${author.slice(-4)} - ` +
+            new Date(Number(ts) * 1000).toLocaleString() + ` - ${likes} likes `;
+          const btn = document.createElement("button");
+          btn.textContent = "Like";
+          btn.onclick = () => likeNote(i);
+          div.append(p, small, btn);
+          $("notes").appendChild(div);
+        }
+      } catch (e) { show("Could not load notes: " + (e.shortMessage || e.message), false); }
+    }
+
+    async function sendTx(txPromise, label) {
+      try {
+        show("Waiting for MetaMask confirmation...");
+        const tx = await txPromise;
+        show(label + " sent. Hash: " + tx.hash + " (mining...)");
+        await tx.wait();
+        show(label + " confirmed! Tx: " + tx.hash);
+        loadNotes();
+      } catch (e) { show(label + " failed: " + (e.shortMessage || e.message), false); }
+    }
+
+    function postNote() {
+      if (!contract) return show("Connect your wallet first.", false);
+      const text = $("noteInput").value.trim();
+      if (!text) return show("Please type a note first.", false);
+      sendTx(contract.postNote(text), "Post").then(() => $("noteInput").value = "");
+    }
+
+    function likeNote(id) { sendTx(contract.likeNote(id), "Like"); }
+
+    $("connectBtn").onclick = connect;
+    $("postBtn").onclick = postNote;
+    $("refreshBtn").onclick = loadNotes;
+  </script>
+</body>
+</html>
